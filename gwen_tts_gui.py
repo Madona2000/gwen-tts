@@ -3,7 +3,7 @@ import os
 import json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QTextEdit, QLineEdit, QPushButton, QComboBox, QTabWidget, 
-                             QFileDialog, QMessageBox, QGroupBox, QCheckBox)
+                             QFileDialog, QMessageBox, QGroupBox, QCheckBox, QProgressBar)
 from PyQt5.QtCore import QProcess, Qt
 
 class GwenTTSGui(QMainWindow):
@@ -106,7 +106,13 @@ class GwenTTSGui(QMainWindow):
         custom_layout.addWidget(QLabel("Văn bản trong file audio mẫu (Transcript):"))
         self.ref_text_input = QTextEdit()
         self.ref_text_input.setMaximumHeight(80)
-        self.ref_text_input.setPlaceholderText("Ghi lại y hệt những gì người đi trước đã nói trong file mẫu...")
+        self.ref_text_input.setPlaceholderText(
+            "⚠️ QUAN TRỌNG: Ghi lại CHÍNH XÁC những gì người nói trong file audio mẫu.\n"
+            "→ Sai transcript = mô hình bị lạc → ra giọng Trung Quốc!\n\n"
+            "✅ Đúng: 'xin chào tôi là minh hôm nay chúng ta sẽ'\n"
+            "❌ Sai: 'Xin chào! Tôi là Minh. Hôm nay...' (dấu câu, hoa thường không khớp)\n\n"
+            "Nên viết thường, ít dấu câu, khớp y hệt nhịp đọc trong audio."
+        )
         custom_layout.addWidget(self.ref_text_input)
         
         self.tab_widget.addTab(self.tab_custom, "Sao chép giọng (Custom Clone)")
@@ -172,6 +178,12 @@ class GwenTTSGui(QMainWindow):
         self.btn_generate.setStyleSheet("background-color: #27ae60; font-size: 16px; padding: 12px;")
         self.btn_generate.clicked.connect(self.start_generation)
         main_layout.addWidget(self.btn_generate)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate mode
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.progress_bar)
 
         # -----------------------------------------------------------------
         # Log Output Section
@@ -254,7 +266,7 @@ class GwenTTSGui(QMainWindow):
         # Prepare arguments: Tự động dùng card đồ họa (MPS) trên Mac chip M-series để tăng tốc
         import platform
         device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
-        args = [inference_script, "--text", text, "--output", out_path, "--device", device]
+        args = ["-u", inference_script, "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
 
         # Check which mode is active
         if self.tab_widget.currentIndex() == 0:  # Built-in
@@ -272,6 +284,22 @@ class GwenTTSGui(QMainWindow):
             if not ref_text:
                 QMessageBox.warning(self, "Lỗi", "Vui lòng ghi Transcript cho audio mẫu.")
                 return
+
+            # Cảnh báo nếu audio mẫu quá dài
+            try:
+                import soundfile as sf
+                info = sf.info(ref_audio)
+                if info.duration > 15.0:
+                    reply = QMessageBox.question(
+                        self, "Cảnh báo Audio Quá Dài",
+                        f"Audio mẫu của bạn dài {info.duration:.1f} giây. Khuyến nghị CHỈ dùng audio từ 3-10 giây để AI tập trung tốt nhất. Dùng audio quá dài sẽ khiến thời gian chạy rất lâu (vài phút) và AI dễ bị nhầm lẫn (treo/im lặng). Bạn có chắc chắn muốn tiếp tục?",
+                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+                    )
+                    if reply == QMessageBox.No:
+                        return
+            except Exception as e:
+                self.print_log(f"Cảnh báo: Không thể kiểm tra độ dài audio: {e}")
+
             args.extend(["--ref_audio", ref_audio, "--ref_text", ref_text])
 
         # Checkbox = Layer 2: pitch shift post-processing.
@@ -289,6 +317,7 @@ class GwenTTSGui(QMainWindow):
 
         self.btn_generate.setEnabled(False)
         self.btn_generate.setText("ĐANG XỬ LÝ (XEM LOG)...")
+        self.progress_bar.setVisible(True)
         self.log_output.clear()
         
         # Display the command being run for debug
@@ -321,6 +350,7 @@ class GwenTTSGui(QMainWindow):
     def process_finished(self, exit_code, exit_status):
         self.btn_generate.setEnabled(True)
         self.btn_generate.setText("▶ BẮT ĐẦU TẠO GIỌNG NÓI")
+        self.progress_bar.setVisible(False)
         self.print_log("-" * 40)
         
         if exit_status == QProcess.CrashExit:

@@ -2,7 +2,15 @@
     "yen_nhi": {
         "name": "Yến Nhi",
         "audio_path": "data/ref_audio/yen_nhi.wav",
-        "text": "sao lại không liên quan. các anh lấy vợ rồi các anh cứ đội chị lên đầu làm nóc nhà ấy, suốt ngày hỏi ý kiến các chị thì làm sao mà ra vấn đề được cho em đúng không."
+        "text": "sao lại không liên quan. các anh lấy vợ rồi các anh cứ đội chị lên đầu làm nóc nhà ấy, suốt ngày hỏi ý kiến các chị thì làm sao mà ra vấn đề được cho em đúng không.",
+        "generation_config": {
+            "temperature": 0.3,
+            "top_k": 30,
+            "top_p": 0.85,
+            "subtalker_temperature": 0.3,
+            "subtalker_top_k": 30,
+            "subtalker_top_p": 0.85
+        }
     },
     "my_van": {
         "name": "Mỹ Vân",
@@ -27,7 +35,15 @@
     "khanh_toan": {
         "name": "Khánh Toàn",
         "audio_path": "data/ref_audio/khanh_toan.wav",
-        "text": "việt nam đang kiêu hãnh bước vào kỷ nguyên vươn mình rực rỡ với khát vọng mãnh liệt, trí tuệ đổi mới, tinh thần đoàn kết."
+        "text": "việt nam đang kiêu hãnh bước vào kỷ nguyên vươn mình rực rỡ với khát vọng mãnh liệt, trí tuệ đổi mới, tinh thần đoàn kết.",
+        "generation_config": {
+            "temperature": 0.3,
+            "top_k": 30,
+            "top_p": 0.85,
+            "subtalker_temperature": 0.3,
+            "subtalker_top_k": 30,
+            "subtalker_top_p": 0.85
+        }
     },
     "tran_lam": {
         "name": "Trần Lâm",
@@ -47,6 +63,42 @@
     "theanh_28": {
         "name": "Theanh_28",
         "audio_path": "data/ref_audio/theanh_28.wav",
-        "text": "Một lần tôi vô tình thấy tin nhắn em gái anh bảo rằng, quen con em miền Tây khi nào lấy vợ thì bỏ, trong khi em gái anh nhỏ tuổi hơn tôi nhiều."
+        "text": "Một lần tôi vô tình thấy tin nhắn em gái anh bảo rằng, quen con em miền Tây khi nào lấy vợ thì bỏ, trong khi em gái anh nhỏ tuổi hơn tôi nhiều.",
+        "generation_config": {
+            "temperature": 0.7,
+            "top_k": 50,
+            "top_p": 0.9,
+            "repetition_penalty": 1.0,
+            "subtalker_temperature": 0.7,
+            "subtalker_top_k": 50,
+            "subtalker_top_p": 0.9
+        }
+    },
+    "yen_nhi_2": {
+        "name": "Yến Nhi 2",
+        "audio_path": "data/ref_audio/yen_nhi_2.wav",
+        "text": "sao lại không liên quan. các anh lấy vợ rồi các anh cứ đội chị lên đầu làm nóc nhà ấy, suốt ngày hỏi ý kiến các chị thì làm sao mà ra vấn đề được cho em đúng không.",
+        "generation_config": {
+            "temperature": 0.3,
+            "top_k": 30,
+            "top_p": 0.85,
+            "subtalker_temperature": 0.3,
+            "subtalker_top_k": 30,
+            "subtalker_top_p": 0.85
+        }
+    },
+    "vietcuong_ai": {
+        "name": "Vietcuong_AI",
+        "audio_path": "data/ref_audio/Vietcuong_AI.WAV",
+        "text": "Nhưng thật ra, bạn đang bị ném xuyên qua vũ trụ với tốc độ mà não bạn không thể hình dung nổi. Ngay lúc này, bạn đang ở Việt Nam, đứng trên mặt đất và cảm thấy mọi thứ hoàn toàn ổn định",
+        "generation_config": {
+            "temperature": 0.3,
+            "top_k": 30,
+            "top_p": 0.85,
+            "repetition_penalty": 1.0,
+            "subtalker_temperature": 0.3,
+            "subtalker_top_k": 30,
+            "subtalker_top_p": 0.85
+        }
     }
 }

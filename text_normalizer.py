@@ -609,42 +609,6 @@ def _format_punctuation_and_pauses(text):
     return text
 
 
-def _apply_theanh28_style(text):
-    """
-    Tạo phong cách Theanh28 — đọc phiêu, nhấn nhá, nâng giọng cuối câu.
-    
-    Kỹ thuật: Dùng dấu câu cảm xúc để ép model lên giọng + kéo dài tự nhiên.
-    - Dấu chấm (.)  → (!!!) = nâng giọng mạnh, kéo dài, dramatic
-    - Dấu phẩy (,)  → (!)  = nhấn nhẹ ở ngắt câu, giữ nhịp phiêu
-    - Dấu hỏi (?)   → (???) = tò mò, nâng cao tone cuối, thu hút
-    - Dấu than (!)   → (!!!) = tăng cường intensity
-    
-    Cách này an toàn vì KHÔNG thay đổi từ vựng → chuẩn tiếng Việt 100%.
-    """
-    # Bước 1: Chuẩn hóa dấu lặp sẵn có → về 1 dấu
-    text = re.sub(r'!{2,}', '!', text)
-    text = re.sub(r'\?{2,}', '?', text)
-    text = re.sub(r'\.{2,}', '.', text)
-    
-    # Bước 2: Thay dấu câu trong 1 lượt (tránh match lại)
-    # Gradient cảm xúc: , → ! < . → !! < ! → !!!
-    def _upgrade_punct(match):
-        p = match.group(0)
-        if p == ',':  return '!'    # nhấn nhẹ, giữ nhịp
-        if p == '.':  return '!!'   # nâng giọng vừa (câu bình thường → dramatic)
-        if p == '!':  return '!!!'  # max intensity (người viết đã cố ý nhấn)
-        if p == '?':  return '???'  # tò mò, nâng tone cuối, thu hút
-        return p
-    
-    text = re.sub(r'[.,!?]', _upgrade_punct, text)
-    
-    # Bước 3: Giới hạn tối đa 3 dấu liên tiếp
-    text = re.sub(r'!{4,}', '!!!', text)
-    text = re.sub(r'\?{4,}', '???', text)
-    
-    return text
-
-
 def _cleanup_whitespace(text):
     """Normalize multiple spaces and whitespace."""
     text = re.sub(r'\s+', ' ', text)
@@ -833,10 +797,6 @@ def normalize_vietnamese(text, add_warmup=True, theanh28_style=False):
 
     # Step 16: Punctuation (đảm bảo cuối câu có dấu chấm)
     text = _ensure_punctuation(text)
-
-    # Step 16.2: Theanh28 style elongation (apply before formatting spaces around punctuation)
-    if theanh28_style:
-        text = _apply_theanh28_style(text)
 
     # Step 16.5: Format Punctuation for pauses (chuẩn hóa khoảng trắng quanh dấu câu)
     text = _format_punctuation_and_pauses(text)

@@ -27,33 +27,19 @@ import numpy as np
 import soundfile as sf
 
 # Recommended generation config for Gwen-TTS
-# These parameters are optimized for natural Vietnamese voice cloning
+# These parameters are optimized for natural Vietnamese voice cloning.
+# NOTE: For Custom Clone (ICL mode), the model must stay CLOSE to the reference
+# speaker. Lower temperature = less drift toward the model's training dominant
+# language (Chinese). temperature=0.7 is too high and causes Chinese bleed-through.
 GENERATION_CONFIG = dict(
-    temperature=0.7,
-    top_k=50,
-    top_p=0.9,
-    max_new_tokens=4096,
-    repetition_penalty=1.0,
-    subtalker_dosample=True,
-    subtalker_temperature=0.7,
-    subtalker_top_k=50,
-    subtalker_top_p=0.9,
-)
-
-# Theanh28 style: Lower temperatures force the model to closely replicate
-# the reference speaker's characteristics (high pitch, dramatic tone).
-# - subtalker_temperature=0.1: Forces near-deterministic speaker identity replication
-# - temperature=0.3: Tighter prosody, less deviation from reference rhythm
-# - repetition_penalty=1.2: Prevents monotone repetition on long text
-THEANH28_GENERATION_CONFIG = dict(
     temperature=0.3,
-    top_k=20,
+    top_k=30,
     top_p=0.85,
     max_new_tokens=4096,
-    repetition_penalty=1.2,
+    repetition_penalty=1.05,
     subtalker_dosample=True,
-    subtalker_temperature=0.1,
-    subtalker_top_k=20,
+    subtalker_temperature=0.3,
+    subtalker_top_k=30,
     subtalker_top_p=0.85,
 )
 
@@ -80,7 +66,7 @@ def load_model(model_path, device="cuda:0", dtype=None):
             dtype = torch.float32
 
     try:
-        import flash_attn  # noqa: F401
+        import flash_attn  # type: ignore # noqa: F401
         attn_impl = "flash_attention_2" if "cuda" in device else "sdpa"
     except Exception:
         attn_impl = "sdpa"
@@ -115,31 +101,20 @@ def normalize_vietnamese(text, theanh28_style=False):
     return _normalize(text, theanh28_style=theanh28_style)
 
 
-# Warmup duration estimate: how many seconds of audio the ". " prefix
-# typically produces. We set this to 0.0 to avoid accidentally cutting off
-# the actual first words of the text if the model generates the prefix quickly.
-# A slight pause at the
+# Warmup trim disabled — prefix removed to avoid alien sounds at start.
 WARMUP_TRIM_SECONDS = 0.0
 
 
-def _trim_warmup_audio(wav, sr, trim_seconds=WARMUP_TRIM_SECONDS):
-    """Trim warmup prefix audio from the start of generated speech.
-    
-    Args:
-        wav: numpy array of audio samples
-        sr: sample rate
-        trim_seconds: seconds to trim from start
-    
-    Returns:
-        Trimmed audio array
+def _pad_start_silence(wav, sr, pad_seconds=0.2):
+    """Thêm một đoạn im lặng (silence) vào đầu file audio.
+    Giúp chống hiện tượng nuốt chữ đầu khi phát trên các media player hoặc loa Bluetooth.
     """
-    if trim_seconds <= 0:
+    if pad_seconds <= 0:
         return wav
-        
-    trim_samples = int(trim_seconds * sr)
-    if trim_samples >= len(wav):
-        return wav  # Don't trim if audio is shorter than warmup
-    return wav[trim_samples:]
+    
+    pad_samples = int(pad_seconds * sr)
+    silence = np.zeros(pad_samples, dtype=wav.dtype)
+    return np.concatenate([silence, wav])
 
 
 def _pitch_shift_audio(wav, sr, semitones):
@@ -175,48 +150,155 @@ def _pitch_shift_audio(wav, sr, semitones):
     return shifted
 
 
+def _crossfade_concat(wav1, wav2, sr, fade_ms=10):
+    """Nối 2 đoạn audio mượt mà (crossfade) để tránh tiếng click (lụp bụp) ở điểm nối."""
+    if len(wav1) == 0: return wav2
+    if len(wav2) == 0: return wav1
+    
+    fade_samples = int((fade_ms / 1000.0) * sr)
+    fade_samples = min(fade_samples, len(wav1), len(wav2))
+    
+    if fade_samples <= 0:
+        return np.concatenate([wav1, wav2])
+        
+    fade_out = np.linspace(1.0, 0.0, fade_samples)
+    fade_in = np.linspace(0.0, 1.0, fade_samples)
+    
+    overlap1 = wav1[-fade_samples:] * fade_out
+    overlap2 = wav2[:fade_samples] * fade_in
+    mixed = overlap1 + overlap2
+    
+    return np.concatenate([wav1[:-fade_samples], mixed, wav2[fade_samples:]])
+
+
+def _apply_dramatic_exclamation(wav, sr, raw_text):
+    """
+    Kéo dài và nâng tone tự động ở đầu hoặc cuối câu nếu phát hiện dấu '!!!'.
+    Đúng chuẩn phong cách Theanh28:
+    - 'Ôi!!!' ở đầu -> Kéo dài (time-stretch) và vút lên (pitch-shift).
+    - '...ngay!!!' ở cuối -> Ngân dài chữ cuối và nâng tone CTA kêu gọi.
+    """
+    if "!!!" not in raw_text:
+        return wav
+
+    import librosa
+
+    # Tìm đoạn có tiếng nói thật sự, dùng top_db=35 để dễ tách từ hơn
+    intervals = librosa.effects.split(wav, top_db=35)
+    if len(intervals) == 0:
+        return wav
+    
+    start_idx = intervals[0][0]
+    end_idx = intervals[-1][1]
+    
+    words = raw_text.strip().split()
+    
+    # Xác định vị trí có !!! (ở 2 chữ đầu hoặc 2 chữ cuối)
+    elevate_start = any("!!!" in w for w in words[:2])
+    elevate_end = any("!!!" in w for w in words[-2:])
+    
+    if not (elevate_start or elevate_end):
+        return wav
+
+    print("[Audio FX] Kích hoạt hiệu ứng tò mò/CTA (kéo dài + nâng tone) cho dấu '!!!'")
+    
+    # Tự động tìm ranh giới từ đầu tiên dựa vào khoảng lặng
+    first_word_end = intervals[0][1]
+    # Giới hạn tối đa 0.8s cho từ đầu tiên (tránh gom quá nhiều từ nếu nói lướt)
+    if (first_word_end - start_idx) > 0.8 * sr:
+        first_word_end = start_idx + int(0.5 * sr)
+        
+    # Tự động tìm ranh giới từ cuối cùng
+    last_word_start = intervals[-1][0]
+    if (end_idx - last_word_start) > 1.0 * sr:
+        last_word_start = end_idx - int(0.6 * sr)
+    
+    if first_word_end > last_word_start:
+        mid = (start_idx + end_idx) // 2
+        first_word_end = mid
+        last_word_start = mid
+    
+    pieces = []
+    
+    # 1. Khoảng lặng đầu
+    pieces.append(wav[:start_idx])
+    
+    # 2. Từ đầu tiên (VD: Ôi!!!)
+    first_word = wav[start_idx:first_word_end]
+    if elevate_start and len(first_word) > 0:
+        # Giảm tốc độ (kéo dài 25%) và nâng pitch 2.5 semitones
+        first_word = librosa.effects.time_stretch(first_word, rate=0.8)
+        first_word = librosa.effects.pitch_shift(first_word, sr=sr, n_steps=2.5, n_fft=512, hop_length=128)
+    pieces.append(first_word)
+    
+    # 3. Đoạn giữa
+    pieces.append(wav[first_word_end:last_word_start])
+    
+    # 4. Từ cuối cùng (VD: ngay!!!)
+    last_word = wav[last_word_start:end_idx]
+    if elevate_end and len(last_word) > 0:
+        # Ngân dài (kéo dài 30%) và nâng pitch mạnh để kêu gọi CTA
+        last_word = librosa.effects.time_stretch(last_word, rate=0.7)
+        last_word = librosa.effects.pitch_shift(last_word, sr=sr, n_steps=3.0, n_fft=512, hop_length=128)
+    pieces.append(last_word)
+    
+    # 5. Khoảng lặng cuối
+    pieces.append(wav[end_idx:])
+    
+    # Nối các đoạn lại bằng crossfade để không bị vấp
+    out_wav = pieces[0]
+    for p in pieces[1:]:
+        out_wav = _crossfade_concat(out_wav, p, sr, fade_ms=10)
+        
+    return out_wav
 
 
 def generate_voice_clone(model, text, language, ref_audio, ref_text,
-                         theanh28_style=False, use_tight_config=False,
-                         pitch_shift=None):
-    """Generate speech using voice cloning.
+                         theanh28_style=False,
+                         pitch_shift=None, custom_gen_config=None):
+    """
+    Generate speech using custom reference audio.
     
     Args:
-        model: Loaded Gwen-TTS model
+        model: Loaded Qwen3TTSModel
         text: Text to synthesize
         language: Language identifier
         ref_audio: Path to reference audio file
         ref_text: Transcript of reference audio
         theanh28_style: If True, apply text manipulation (. → !! , → ! etc.)
                        for dramatic reading. Only from checkbox, never auto.
-        use_tight_config: If True, use low temperature config to stay
-                         closer to the reference speaker's voice/style.
-                         Auto-enabled for theanh speakers.
         pitch_shift: Semitones to shift pitch AFTER generation.
                     Only applied when explicitly set (e.g., from slider).
+        custom_gen_config: Optional dict of generation config overrides.
     """
-    from text_normalizer import VIETNAMESE_WARMUP_PREFIX, VIETNAMESE_WARMUP_ENABLED
-    
     text = normalize_vietnamese(text, theanh28_style=theanh28_style)
-    ref_text = normalize_vietnamese(ref_text)
+    # ref_text: chỉ chuẩn hóa cơ bản (KHÔNG dùng theanh28_style)
+    # vì ref_text phải khớp chính xác với âm thanh trong file audio mẫu.
+    # Nếu biến đổi ref_text (!!!, dấu câu...) → mismatch ICL → model mất định hướng → tiếng Trung
+    ref_text = normalize_vietnamese(ref_text, theanh28_style=False)
     
-    # Add warmup prefix to prevent first-word clipping
-    use_warmup = VIETNAMESE_WARMUP_ENABLED and language.lower() == "vietnamese"
-    if use_warmup:
-        text = VIETNAMESE_WARMUP_PREFIX + text
+    # Clean leading punctuation that user might have added
+    import re
+    text = re.sub(r'^[\s.,?!:;…]+', '', text)
     
     # Select generation config:
-    # - Tight config: low temperature → model stays close to reference voice
-    # - Standard config: more creative freedom
-    if use_tight_config or theanh28_style:
-        gen_config = THEANH28_GENERATION_CONFIG
-        print("[Config] Tham số chặt — bám sát giọng tham chiếu")
-    else:
-        gen_config = GENERATION_CONFIG
+    # Standard config: uses lower temperature (see GENERATION_CONFIG above)
+    gen_config = GENERATION_CONFIG.copy()
+    print("[Config] Tham số chuẩn — nhiệt độ thấp để tránh giọng Trung")
     
+    # Override with custom speaker-specific config if provided
+    if custom_gen_config:
+        gen_config.update(custom_gen_config)
+        print("[Config] Áp dụng tham số tuỳ chỉnh riêng cho giọng")
+
     if theanh28_style:
         print("[Style] Nhấn nhá cảm xúc (. → !! , → ! ! → !!!)")
+
+    print(f"[Language] Ngôn ngữ đầu ra: {language}")
+    print(f"[Text] Nội dung (đã chuẩn hóa): {text[:80]}{'...' if len(text) > 80 else ''}")
+    print(f"[Ref] Transcript mẫu (đã chuẩn hóa): {ref_text[:80]}{'...' if len(ref_text) > 80 else ''}")
+    
+    print("[Status] Đang tiến hành tạo giọng nói (có thể mất từ vài chục giây đến vài phút tùy độ dài)...")
     
     wavs, sr = model.generate_voice_clone(
         text=text,
@@ -228,9 +310,18 @@ def generate_voice_clone(model, text, language, ref_audio, ref_text,
     
     result = wavs[0]
     
-    # Trim warmup audio from the start
-    if use_warmup:
-        result = _trim_warmup_audio(result, sr)
+
+            
+    # Thêm một chút khoảng lặng ở đầu để chống nuốt âm chữ đầu tiên do độ trễ của media player
+    result = _pad_start_silence(result, sr, pad_seconds=0.2)
+
+        
+    # Tự động nhận diện và áp dụng hiệu ứng cho dấu !!! (Theanh28 style CTA)
+    # Lưu ý: truyền raw text ban đầu để check chính xác dấu '!!!' do text_normalizer có thể biến đổi.
+    # Nhưng vì normalization hiện tại giữ lại '!!!', chúng ta có thể dùng `text` hoặc raw argument.
+    # Ở đây tôi truyền tham số text gốc (chưa qua warmup) nhưng đã normalize.
+    if theanh28_style:
+        result = _apply_dramatic_exclamation(result, sr, text)
     
     # Post-processing pitch shift — ONLY when explicitly requested.
     if pitch_shift and pitch_shift != 0:
@@ -240,7 +331,7 @@ def generate_voice_clone(model, text, language, ref_audio, ref_text,
 
 
 def generate_with_speaker(model, text, language, speaker_key, ref_info, base_dir,
-                          theanh28_style=False, use_tight_config=False,
+                          theanh28_style=False,
                           pitch_shift=None):
     """Generate speech using a built-in reference speaker."""
     if speaker_key not in ref_info:
@@ -250,12 +341,13 @@ def generate_with_speaker(model, text, language, speaker_key, ref_info, base_dir
     speaker = ref_info[speaker_key]
     ref_audio_path = os.path.join(base_dir, speaker["audio_path"])
     ref_text = speaker["text"]
+    custom_gen_config = speaker.get("generation_config", None)
 
     return generate_voice_clone(
         model, text, language, ref_audio_path, ref_text,
         theanh28_style=theanh28_style,
-        use_tight_config=use_tight_config,
         pitch_shift=pitch_shift,
+        custom_gen_config=custom_gen_config
     )
 
 
@@ -332,30 +424,13 @@ def main():
 
     # ── Logic ────────────────────────────────────────────────────────
     #
-    # Auto-detect theanh speaker → use_tight_config = True
-    #   → Model uses low temperature to stay close to reference voice.
-    #   → Text is NOT modified — model reads clean Vietnamese naturally.
-    #
     # Checkbox --theanh28 → theanh28_style = True
     #   → Text manipulation (. → !! , → ! ! → !!! ? → ???)
-    #   → Also enables tight config + optional pitch shift.
-    #   → This is EXPERIMENTAL and may make output less natural.
+    #   → Also enables optional pitch shift.
     # ─────────────────────────────────────────────────────────────────
-    
-    # Auto-detect theanh speaker
-    if args.speaker:
-        is_theanh_speaker = "theanh" in args.speaker.lower()
-    else:
-        is_theanh_speaker = "theanh" in str(args.ref_audio).lower()
-    
-    # Tight config: auto for theanh speakers (stays close to reference)
-    use_tight_config = is_theanh_speaker
     
     # Text manipulation: ONLY from checkbox (never auto)
     theanh28_style = args.theanh28
-    
-    if is_theanh_speaker and not args.theanh28:
-        print("[Auto] Giọng Theanh → tight config (bám sát giọng gốc, không thay đổi text)")
 
     if args.speaker:
         ref_info = load_speaker_info(ref_info_path)
@@ -363,7 +438,6 @@ def main():
         wav, sr = generate_with_speaker(
             model, args.text, args.language, args.speaker, ref_info, base_dir,
             theanh28_style=theanh28_style,
-            use_tight_config=use_tight_config,
             pitch_shift=args.pitch_shift,
         )
     else:
@@ -371,7 +445,6 @@ def main():
         wav, sr = generate_voice_clone(
             model, args.text, args.language, args.ref_audio, args.ref_text,
             theanh28_style=theanh28_style,
-            use_tight_config=use_tight_config,
             pitch_shift=args.pitch_shift,
         )
 
