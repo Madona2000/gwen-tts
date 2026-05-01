@@ -147,7 +147,6 @@ ABBREVIATIONS = {
     "usd": "đô la mỹ",
     "eur": "ơ rô",
     "ceo": "xi i ô",
-    "ai": "ây ai",
     "it": "ai ti",
     "gdp": "gi đi pi",
     "wto": "đáp liu ti ô",
@@ -711,6 +710,69 @@ def _smooth_compound_words(text):
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Theanh28 Style Exaggeration (Text Manipulation)
+# ─────────────────────────────────────────────────────────────────────
+
+VOWELS = "aeiouyáàảãạăắằẳẵặâấầẩẫậéèẻẽẹêếềểễệíìỉĩịóòỏõọôốồổỗộơớờởỡợúùủũụưứừửữựýỳỷỹỵ"
+TONELESS_MAP = {
+    'á': 'a', 'à': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a',
+    'ắ': 'ă', 'ằ': 'ă', 'ẳ': 'ă', 'ẵ': 'ă', 'ặ': 'ă',
+    'ấ': 'â', 'ầ': 'â', 'ẩ': 'â', 'ẫ': 'â', 'ậ': 'â',
+    'é': 'e', 'è': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e',
+    'ế': 'ê', 'ề': 'ê', 'ể': 'ê', 'ễ': 'ê', 'ệ': 'ê',
+    'í': 'i', 'ì': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+    'ó': 'o', 'ò': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o',
+    'ố': 'ô', 'ồ': 'ô', 'ổ': 'ô', 'ỗ': 'ô', 'ộ': 'ô',
+    'ớ': 'ơ', 'ờ': 'ơ', 'ở': 'ơ', 'ỡ': 'ơ', 'ợ': 'ơ',
+    'ú': 'u', 'ù': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u',
+    'ứ': 'ư', 'ừ': 'ư', 'ử': 'ư', 'ữ': 'ư', 'ự': 'ư',
+    'ý': 'y', 'ỳ': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+}
+
+def _remove_tone(char):
+    is_upper = char.isupper()
+    c = char.lower()
+    res = TONELESS_MAP.get(c, c)
+    return res.upper() if is_upper else res
+
+def _elongate_word(word, repeat=2):
+    matches = list(re.finditer(f"[{VOWELS}]+", word, re.IGNORECASE))
+    if not matches:
+        return word
+    last_match = matches[-1]
+    vowel_group = last_match.group()
+    last_vowel_char = vowel_group[-1]
+    toneless_vowel = _remove_tone(last_vowel_char)
+    new_vowel_group = vowel_group + (toneless_vowel * repeat)
+    return word[:last_match.start()] + new_vowel_group + word[last_match.end():]
+
+def _apply_theanh28_style(text):
+    """
+    Kéo dài từ cuối trước dấu câu và đổi dấu câu thành dấu cảm thán.
+    """
+    def replace_func(match):
+        word = match.group(1)
+        punct = match.group(2)
+        # Kéo dài từ
+        elongated = _elongate_word(word, repeat=2)
+        
+        # Tăng cường cảm xúc dấu câu
+        if punct == '.':
+            punct = '!!'
+        elif punct == ',':
+            punct = '!'
+        elif punct == '!':
+            punct = '!!!'
+        elif punct == '?':
+            punct = '???'
+            
+        return elongated + punct
+        
+    text = re.sub(r'([a-zA-Z_À-ỹ]+)\s*([.,?!:;…]+)', replace_func, text)
+    return text
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────
 
@@ -800,6 +862,11 @@ def normalize_vietnamese(text, add_warmup=True, theanh28_style=False):
 
     # Step 16.5: Format Punctuation for pauses (chuẩn hóa khoảng trắng quanh dấu câu)
     text = _format_punctuation_and_pauses(text)
+
+    # Step 16.8: Apply Theanh28 style text manipulation if requested
+    # Elongates words before punctuation and transforms punctuation
+    if theanh28_style:
+        pass # Disabled: Let the model naturally handle emotion from the reference audio
 
     # Step 17: Clean whitespace
     text = _cleanup_whitespace(text)

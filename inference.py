@@ -101,8 +101,51 @@ def normalize_vietnamese(text, theanh28_style=False):
     return _normalize(text, theanh28_style=theanh28_style)
 
 
-# Warmup trim disabled — prefix removed to avoid alien sounds at start.
+# Warmup trim: cut model startup noise before first real speech frame
 WARMUP_TRIM_SECONDS = 0.0
+
+
+def _trim_leading_silence(wav, sr, top_db=22, pad_seconds=0.08):
+    """Cắt bỏ tạp âm / khoảng im lặng dư ở đầu output của model.
+    
+    Model Qwen-TTS đôi khi sinh ra 0.1-0.9s tạp âm (tiếng lạo xạo, nhiễu) trước
+    khi giọng nói thật sự bắt đầu. Hàm này tự động phát hiện và cắt bỏ phần đó,
+    bỏ qua các xung nhiễu quá ngắn (<0.1s),
+    sau đó thêm lại một khoảng im lặng ngắn (pad_seconds) để tránh nuốt âm.
+    
+    Args:
+        wav: numpy array
+        sr: sample rate
+        top_db: ngưỡng phát hiện tiếng nói (dB dưới mức cực đại)
+        pad_seconds: khoảng im lặng sạch thêm vào trước giọng nói
+    """
+    import librosa
+    intervals = librosa.effects.split(wav, top_db=top_db)
+    if len(intervals) == 0:
+        return wav
+    
+    # Filter out very short noise bursts at the beginning
+    speech_start = 0
+    for interval in intervals:
+        start, end = interval
+        duration = (end - start) / sr
+        if duration > 0.1:  # Must be longer than 100ms to be considered actual speech
+            speech_start = start
+            break
+    else:
+        # Fallback to the first interval if all are too short
+        speech_start = intervals[0][0]
+        
+    # Lùi lại một chút (buffer) để không cắt mất âm bật (attack) của phụ âm đầu
+    buffer_samples = int(0.05 * sr) # 50ms buffer
+    speech_start = max(0, speech_start - buffer_samples)
+        
+    trimmed = wav[speech_start:]
+    
+    # Thêm lại khoảng im lặng sạch (không có tạp âm model) trước giọng nói
+    pad_samples = int(pad_seconds * sr)
+    silence = np.zeros(pad_samples, dtype=wav.dtype)
+    return np.concatenate([silence, trimmed])
 
 
 def _pad_start_silence(wav, sr, pad_seconds=0.2):
@@ -115,6 +158,57 @@ def _pad_start_silence(wav, sr, pad_seconds=0.2):
     pad_samples = int(pad_seconds * sr)
     silence = np.zeros(pad_samples, dtype=wav.dtype)
     return np.concatenate([silence, wav])
+
+
+def _enhance_vietnamese_clarity(wav, sr, target_rms=0.10):
+    """Tăng độ sắc nét phụ âm tiếng Việt và normalize âm lượng.
+    
+    Vấn đề: Qwen-TTS (model gốc tiếng Trung) thường tạo output với spectral centroid
+    thấp (thiếu độ sắc của các phụ âm s/x/ch/nh/th... trong tiếng Việt), khiến
+    giọng nghe có cảm giác “lơi lới” như người Trung nói tiếng Việt.
+
+    Giải pháp: Áp dụng high-shelf EQ filter để boost dải tần số cao (>2kHz)
+    và normalize RMS về mức target.
+    
+    Args:
+        wav: numpy array audio (float32)
+        sr: sample rate (24000)
+        target_rms: RMS mục đích (khp với infer-audio gốc)
+    """
+    from scipy import signal as scipy_signal
+    
+    # High-shelf EQ: boost frequencies above ~2500Hz (+4dB)
+    # Thiết kế bộ lọc high-shelf với bilinear transform
+    # Gain = +4dB = 1.585x đối với biên độ
+    cutoff_hz = 2500.0
+    gain_db = 4.0
+    gain_linear = 10 ** (gain_db / 20.0)
+    
+    # Thiết kế high-shelf IIR filter đơn giản bằng scipy
+    nyq = sr / 2.0
+    norm_cutoff = cutoff_hz / nyq
+    # Sử dụng bộ lọc Butterworth bậc 2 làm high-pass để lấy phần treble
+    b, a = scipy_signal.butter(2, norm_cutoff, btype='high')
+    wav_treble = scipy_signal.filtfilt(b, a, wav)
+    
+    # Mix: signal gốc + treble boost
+    boost_amount = gain_linear - 1.0  # Phần boost thêm (0.585x)
+    wav_enhanced = wav + boost_amount * wav_treble
+    
+    # Clip tránh distortion
+    wav_enhanced = np.clip(wav_enhanced, -1.0, 1.0)
+    
+    # RMS normalize về mức target
+    current_rms = float(np.sqrt(np.mean(wav_enhanced ** 2)))
+    if current_rms > 1e-6:
+        scale = target_rms / current_rms
+        # Đảm bảo không clip sau khi scale
+        scale = min(scale, 0.99 / float(np.max(np.abs(wav_enhanced))) if float(np.max(np.abs(wav_enhanced))) > 0 else scale)
+        wav_enhanced = wav_enhanced * scale
+    
+    print(f"[Post] Tăng độ rõ phụ âm tiếng Việt (+{gain_db}dB treble boost, RMS normalize).")
+    return wav_enhanced.astype(wav.dtype)
+
 
 
 def _pitch_shift_audio(wav, sr, semitones):
@@ -178,84 +272,16 @@ def _apply_dramatic_exclamation(wav, sr, raw_text):
     - 'Ôi!!!' ở đầu -> Kéo dài (time-stretch) và vút lên (pitch-shift).
     - '...ngay!!!' ở cuối -> Ngân dài chữ cuối và nâng tone CTA kêu gọi.
     """
-    if "!!!" not in raw_text:
-        return wav
-
-    import librosa
-
-    # Tìm đoạn có tiếng nói thật sự, dùng top_db=35 để dễ tách từ hơn
-    intervals = librosa.effects.split(wav, top_db=35)
-    if len(intervals) == 0:
-        return wav
-    
-    start_idx = intervals[0][0]
-    end_idx = intervals[-1][1]
-    
-    words = raw_text.strip().split()
-    
-    # Xác định vị trí có !!! (ở 2 chữ đầu hoặc 2 chữ cuối)
-    elevate_start = any("!!!" in w for w in words[:2])
-    elevate_end = any("!!!" in w for w in words[-2:])
-    
-    if not (elevate_start or elevate_end):
-        return wav
-
-    print("[Audio FX] Kích hoạt hiệu ứng tò mò/CTA (kéo dài + nâng tone) cho dấu '!!!'")
-    
-    # Tự động tìm ranh giới từ đầu tiên dựa vào khoảng lặng
-    first_word_end = intervals[0][1]
-    # Giới hạn tối đa 0.8s cho từ đầu tiên (tránh gom quá nhiều từ nếu nói lướt)
-    if (first_word_end - start_idx) > 0.8 * sr:
-        first_word_end = start_idx + int(0.5 * sr)
-        
-    # Tự động tìm ranh giới từ cuối cùng
-    last_word_start = intervals[-1][0]
-    if (end_idx - last_word_start) > 1.0 * sr:
-        last_word_start = end_idx - int(0.6 * sr)
-    
-    if first_word_end > last_word_start:
-        mid = (start_idx + end_idx) // 2
-        first_word_end = mid
-        last_word_start = mid
-    
-    pieces = []
-    
-    # 1. Khoảng lặng đầu
-    pieces.append(wav[:start_idx])
-    
-    # 2. Từ đầu tiên (VD: Ôi!!!)
-    first_word = wav[start_idx:first_word_end]
-    if elevate_start and len(first_word) > 0:
-        # Giảm tốc độ (kéo dài 25%) và nâng pitch 2.5 semitones
-        first_word = librosa.effects.time_stretch(first_word, rate=0.8)
-        first_word = librosa.effects.pitch_shift(first_word, sr=sr, n_steps=2.5, n_fft=512, hop_length=128)
-    pieces.append(first_word)
-    
-    # 3. Đoạn giữa
-    pieces.append(wav[first_word_end:last_word_start])
-    
-    # 4. Từ cuối cùng (VD: ngay!!!)
-    last_word = wav[last_word_start:end_idx]
-    if elevate_end and len(last_word) > 0:
-        # Ngân dài (kéo dài 30%) và nâng pitch mạnh để kêu gọi CTA
-        last_word = librosa.effects.time_stretch(last_word, rate=0.7)
-        last_word = librosa.effects.pitch_shift(last_word, sr=sr, n_steps=3.0, n_fft=512, hop_length=128)
-    pieces.append(last_word)
-    
-    # 5. Khoảng lặng cuối
-    pieces.append(wav[end_idx:])
-    
-    # Nối các đoạn lại bằng crossfade để không bị vấp
-    out_wav = pieces[0]
-    for p in pieces[1:]:
-        out_wav = _crossfade_concat(out_wav, p, sr, fade_ms=10)
-        
-    return out_wav
+    # [FIX]: Loại bỏ xử lý hậu kỳ (post-processing) bằng librosa pitch_shift
+    # vì thuật toán Phase Vocoder của librosa gây hiện tượng vỡ tiếng ("vỡ 3 từ cuối", "vang").
+    # Thay vào đó, trả về audio nguyên bản và để model TTS tự động xử lý ngữ điệu thông qua text "!!!".
+    return wav
 
 
 def generate_voice_clone(model, text, language, ref_audio, ref_text,
                          theanh28_style=False,
-                         pitch_shift=None, custom_gen_config=None):
+                         pitch_shift=None, custom_gen_config=None,
+                         speaker_key=None):
     """
     Generate speech using custom reference audio.
     
@@ -309,14 +335,19 @@ def generate_voice_clone(model, text, language, ref_audio, ref_text,
     )
     
     result = wavs[0]
-    
 
-            
-    # Thêm một chút khoảng lặng ở đầu để chống nuốt âm chữ đầu tiên do độ trễ của media player
-    result = _pad_start_silence(result, sr, pad_seconds=0.2)
+    # Bước 1: Cắt bỏ tạp âm / nhiễu model ở đầu output (0.1-0.9s đầu tiên thường là noise)
+    # _trim_leading_silence tìm điểm bắt đầu giọng nói thật, cắt bỏ phần noise, rồi thêm
+    # lại 80ms im lặng sạch để tránh nuốt âm tiết đầu tiên.
+    result = _trim_leading_silence(result, sr, top_db=25, pad_seconds=0.1)
+    print("[Post] Đã cắt tạp âm đầu output (top_db=25).")
 
-        
-    # Tự động nhận diện và áp dụng hiệu ứng cho dấu !!! (Theanh28 style CTA)
+    # Bước 2: Tăng cường độ rõ phụ âm tiếng Việt cho Vietcuong_AI
+    # BỎ QUA bước này để giữ lại độ sâu lắng, trầm ấm ở cuối câu của giọng gốc.
+    # if speaker_key == "vietcuong_ai":
+    #     result = _enhance_vietnamese_clarity(result, sr, target_rms=0.10)
+
+    # Bước 3: Tự động nhận diện và áp dụng hiệu ứng cho dấu !!! (Theanh28 style CTA)
     # Lưu ý: truyền raw text ban đầu để check chính xác dấu '!!!' do text_normalizer có thể biến đổi.
     # Nhưng vì normalization hiện tại giữ lại '!!!', chúng ta có thể dùng `text` hoặc raw argument.
     # Ở đây tôi truyền tham số text gốc (chưa qua warmup) nhưng đã normalize.
@@ -347,7 +378,8 @@ def generate_with_speaker(model, text, language, speaker_key, ref_info, base_dir
         model, text, language, ref_audio_path, ref_text,
         theanh28_style=theanh28_style,
         pitch_shift=pitch_shift,
-        custom_gen_config=custom_gen_config
+        custom_gen_config=custom_gen_config,
+        speaker_key=speaker_key
     )
 
 
