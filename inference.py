@@ -129,7 +129,7 @@ def _trim_leading_silence(wav, sr, top_db=22, pad_seconds=0.08):
     for interval in intervals:
         start, end = interval
         duration = (end - start) / sr
-        if duration > 0.1:  # Must be longer than 100ms to be considered actual speech
+        if duration > 0.03:  # Must be longer than 30ms to be considered actual speech
             speech_start = start
             break
     else:
@@ -137,7 +137,7 @@ def _trim_leading_silence(wav, sr, top_db=22, pad_seconds=0.08):
         speech_start = intervals[0][0]
         
     # Lùi lại một chút (buffer) để không cắt mất âm bật (attack) của phụ âm đầu
-    buffer_samples = int(0.05 * sr) # 50ms buffer
+    buffer_samples = int(0.1 * sr) # 100ms buffer
     speech_start = max(0, speech_start - buffer_samples)
         
     trimmed = wav[speech_start:]
@@ -339,8 +339,8 @@ def generate_voice_clone(model, text, language, ref_audio, ref_text,
     # Bước 1: Cắt bỏ tạp âm / nhiễu model ở đầu output (0.1-0.9s đầu tiên thường là noise)
     # _trim_leading_silence tìm điểm bắt đầu giọng nói thật, cắt bỏ phần noise, rồi thêm
     # lại 80ms im lặng sạch để tránh nuốt âm tiết đầu tiên.
-    result = _trim_leading_silence(result, sr, top_db=25, pad_seconds=0.1)
-    print("[Post] Đã cắt tạp âm đầu output (top_db=25).")
+    result = _trim_leading_silence(result, sr, top_db=35, pad_seconds=0.1)
+    print("[Post] Đã cắt tạp âm đầu output (top_db=35).")
 
     # Bước 2: Tăng cường độ rõ phụ âm tiếng Việt cho Vietcuong_AI
     # BỎ QUA bước này để giữ lại độ sâu lắng, trầm ấm ở cuối câu của giọng gốc.
