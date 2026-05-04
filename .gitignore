@@ -33,3 +33,8 @@ Thumbs.db
 # Environment
 .env
 uv.lock
+
+# AI Tools & Memory
+.aevum/
+.antigravity-images/
+.aider*
