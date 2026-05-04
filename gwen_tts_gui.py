@@ -4,8 +4,109 @@ import json
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QTextEdit, QLineEdit, QPushButton, QComboBox, QTabWidget, 
                              QFileDialog, QMessageBox, QGroupBox, QCheckBox, QProgressBar)
-from PyQt5.QtCore import QProcess, Qt
+from PyQt5.QtCore import QProcess, Qt, QThread, pyqtSignal
 
+class ModelLoaderThread(QThread):
+    finished = pyqtSignal(object)
+    log = pyqtSignal(str)
+
+    def run(self):
+        self.log.emit("Đang nạp mô hình AI vào bộ nhớ... (Sẽ mất khoảng 30-60 giây ở lần mở đầu tiên)")
+        import platform
+        import inference
+        device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
+        try:
+            model = inference.load_model("g-group-ai-lab/gwen-tts-0.6B", device=device)
+            self.log.emit("✅ Nạp mô hình thành công! Đã sẵn sàng tạo giọng nói ngay lập tức.")
+            self.finished.emit(model)
+        except Exception as e:
+            self.log.emit(f"❌ Lỗi nạp mô hình: {str(e)}")
+            self.finished.emit(None)
+
+class StdoutRedirector:
+    def __init__(self, log_signal):
+        self.log_signal = log_signal
+
+    def write(self, text):
+        text = text.strip('\r\n')
+        if text:
+            self.log_signal.emit(text)
+
+    def flush(self):
+        pass
+
+class InferenceThread(QThread):
+    finished = pyqtSignal(bool, str) # success, output_path or error_msg
+    log = pyqtSignal(str)
+    
+    def __init__(self, model, args_dict):
+        super().__init__()
+        self.model = model
+        self.args = args_dict
+    
+    def run(self):
+        import sys
+        old_stdout = sys.stdout
+        sys.stdout = StdoutRedirector(self.log)
+        
+        try:
+            import inference
+            from pathlib import Path
+            import soundfile as sf
+            
+            args = self.args
+            
+            theanh28_style = args.get("theanh28", False)
+            chunks = inference.split_text_into_chunks(args["text"], max_chars=400)
+            print(f"\n[Chunking] Văn bản dài {len(args['text'])} ký tự được chia thành {len(chunks)} phần nhỏ.")
+            
+            all_wavs = []
+            final_sr = 24000
+            
+            base_dir = Path(inference.__file__).parent
+            ref_info_path = base_dir / "data" / "ref_info.json"
+            
+            if args.get("speaker"):
+                ref_info = inference.load_speaker_info(ref_info_path)
+                print(f"Generating with speaker: {ref_info[args['speaker']]['name']}...")
+                for i, chunk in enumerate(chunks):
+                    print(f"\n--- Đang xử lý phần {i+1}/{len(chunks)} ({len(chunk)} ký tự) ---")
+                    wav, sr = inference.generate_with_speaker(
+                        self.model, chunk, args["language"], args["speaker"], ref_info, base_dir,
+                        theanh28_style=theanh28_style,
+                        pitch_shift=args.get("pitch_shift")
+                    )
+                    all_wavs.append(wav)
+                    final_sr = sr
+            else:
+                print(f"Generating with custom reference audio: {args['ref_audio']}...")
+                for i, chunk in enumerate(chunks):
+                    print(f"\n--- Đang xử lý phần {i+1}/{len(chunks)} ({len(chunk)} ký tự) ---")
+                    wav, sr = inference.generate_voice_clone(
+                        self.model, chunk, args["language"], args["ref_audio"], args["ref_text"],
+                        theanh28_style=theanh28_style,
+                        pitch_shift=args.get("pitch_shift")
+                    )
+                    all_wavs.append(wav)
+                    final_sr = sr
+
+            if len(all_wavs) > 1:
+                print("\n[Nối file] Đang ghép nối các phần lại thành 1 file âm thanh hoàn chỉnh...")
+                final_wav = inference._concat_audio_chunks(all_wavs, final_sr, gap_seconds=0.25)
+            else:
+                final_wav = all_wavs[0]
+
+            sf.write(args["output"], final_wav, final_sr)
+            print(f"Saved final audio to {args['output']} (sample rate: {final_sr}Hz)")
+            self.finished.emit(True, args["output"])
+            
+        except Exception as e:
+            import traceback
+            err = traceback.format_exc()
+            print(f"❌ Lỗi trong quá trình xử lý: {str(e)}\n{err}")
+            self.finished.emit(False, str(e))
+        finally:
+            sys.stdout = old_stdout
 class GwenTTSGui(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -180,6 +281,8 @@ class GwenTTSGui(QMainWindow):
         self.btn_generate = QPushButton("▶ BẮT ĐẦU TẠO GIỌNG NÓI")
         self.btn_generate.setStyleSheet("background-color: #27ae60; font-size: 16px; padding: 12px;")
         self.btn_generate.clicked.connect(self.start_generation)
+        self.btn_generate.setEnabled(False)
+        self.btn_generate.setText("⏳ ĐANG NẠP MÔ HÌNH AI...")
         main_layout.addWidget(self.btn_generate)
 
         self.progress_bar = QProgressBar()
@@ -202,9 +305,26 @@ class GwenTTSGui(QMainWindow):
         # -----------------------------------------------------------------
         # Init components
         # -----------------------------------------------------------------
+        self.ai_model = None
         self.process = None
+        self.inference_thread = None
         self.speaker_keys = []
         self.load_speakers()
+
+        # Bắt đầu nạp mô hình trong background
+        self.loader_thread = ModelLoaderThread()
+        self.loader_thread.log.connect(self.print_log)
+        self.loader_thread.finished.connect(self.on_model_loaded)
+        self.loader_thread.start()
+
+    def on_model_loaded(self, model):
+        if model is not None:
+            self.ai_model = model
+            self.btn_generate.setEnabled(True)
+            self.btn_generate.setText("▶ BẮT ĐẦU TẠO GIỌNG NÓI")
+        else:
+            self.btn_generate.setText("❌ LỖI NẠP MÔ HÌNH")
+            QMessageBox.critical(self, "Lỗi khởi tạo", "Không thể nạp mô hình AI. Vui lòng kiểm tra log.")
 
     def load_speakers(self):
         ref_info_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "ref_info.json")
@@ -256,26 +376,25 @@ class GwenTTSGui(QMainWindow):
             QMessageBox.warning(self, "Lỗi", "Vui lòng nhập văn bản cần chuyển (Text-to-Speech).")
             return
 
+        if not self.ai_model:
+            QMessageBox.warning(self, "Chưa sẵn sàng", "Mô hình AI chưa được nạp xong hoặc nạp lỗi. Vui lòng chờ!")
+            return
+
         out_path = self.output_path_input.text().strip()
         if not out_path:
             QMessageBox.warning(self, "Lỗi", "Vui lòng chọn nơi lưu file đầu ra.")
             return
 
-        inference_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inference.py")
-        if not os.path.exists(inference_script):
-            QMessageBox.critical(self, "Không tìm thấy", f"Không tìm thấy file: {inference_script}")
-            return
-
-        # Prepare arguments: Tự động dùng card đồ họa (MPS) trên Mac chip M-series để tăng tốc
-        import platform
-        device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
-        
-        if getattr(sys, 'frozen', False):
-            # PyInstaller packaged mode
-            args = ["inference_worker", "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
-        else:
-            # Dev mode
-            args = ["-u", inference_script, "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
+        inference_args = {
+            "text": text,
+            "output": out_path,
+            "language": "vietnamese",
+            "theanh28": False,
+            "pitch_shift": None,
+            "speaker": None,
+            "ref_audio": None,
+            "ref_text": None
+        }
 
         # Check which mode is active
         if self.tab_widget.currentIndex() == 0:  # Built-in
@@ -283,7 +402,7 @@ class GwenTTSGui(QMainWindow):
                 QMessageBox.warning(self, "Lỗi", "Danh sách giọng nói trống. Vui lòng kiểm tra lại 'data/ref_info.json'.")
                 return
             current_speaker_key = self.speaker_keys[self.speaker_combo.currentIndex()]
-            args.extend(["--speaker", current_speaker_key])
+            inference_args["speaker"] = current_speaker_key
         else:  # Custom Clone
             ref_audio = self.ref_audio_input.text().strip()
             ref_text = self.ref_text_input.toPlainText().strip()
@@ -332,18 +451,16 @@ class GwenTTSGui(QMainWindow):
             except Exception as e:
                 self.print_log(f"Cảnh báo: Lỗi khi tối ưu hóa âm thanh (sẽ dùng file gốc): {e}")
 
-            args.extend(["--ref_audio", ref_audio, "--ref_text", ref_text])
+            inference_args["ref_audio"] = ref_audio
+            inference_args["ref_text"] = ref_text
 
         # Checkbox = Layer 2: pitch shift post-processing.
-        # Layer 1 (text style + tight config) is auto-applied by inference.py
-        # when it detects a theanh speaker — no flag needed from GUI.
         if self.chk_theanh28.isChecked():
-            args.append("--theanh28")
-            pitch_value = self.pitch_slider.value() / 10.0
-            args.extend(["--pitch_shift", str(pitch_value)])
+            inference_args["theanh28"] = True
+            inference_args["pitch_shift"] = self.pitch_slider.value() / 10.0
 
         # Prepare process
-        if self.process is not None and self.process.state() == QProcess.Running:
+        if self.inference_thread is not None and self.inference_thread.isRunning():
             QMessageBox.warning(self, "Cảnh báo", "Đang có một tiến trình render. Vui lòng đợi.")
             return
 
@@ -352,61 +469,32 @@ class GwenTTSGui(QMainWindow):
         self.progress_bar.setVisible(True)
         self.log_output.clear()
         
-        # Display the command being run for debug
-        # Format arguments for logging safely without backslash in f-string expression
-        formatted_args = []
-        for a in args:
-            if ' ' in a:
-                # Add quotes around paths with spaces
-                formatted_args.append('"' + a + '"')
-            else:
-                formatted_args.append(a)
-        command_str = f"Chạy lệnh: {sys.executable} {' '.join(formatted_args)}"
-        self.print_log(command_str)
+        self.print_log("-" * 40)
+        self.print_log("Bắt đầu xử lý (Sử dụng mô hình đã nạp trong RAM)")
         self.print_log("-" * 40)
 
-        self.process = QProcess()
-        self.process.setProcessChannelMode(QProcess.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self.handle_stdout)
-        self.process.finished.connect(self.process_finished)
-        
-        # Run inference using the same python executable running the GUI
-        self.process.start(sys.executable, args)
+        self.inference_thread = InferenceThread(self.ai_model, inference_args)
+        self.inference_thread.log.connect(self.print_log)
+        self.inference_thread.finished.connect(self.process_finished)
+        self.inference_thread.start()
 
-    def handle_stdout(self):
-        data = self.process.readAllStandardOutput()
-        text = bytes(data).decode("utf8", errors="replace").strip()
-        if text:
-            self.print_log(text)
-
-    def process_finished(self, exit_code, exit_status):
+    def process_finished(self, success, result_msg):
         self.btn_generate.setEnabled(True)
         self.btn_generate.setText("▶ BẮT ĐẦU TẠO GIỌNG NÓI")
         self.progress_bar.setVisible(False)
         self.print_log("-" * 40)
         
-        if exit_status == QProcess.CrashExit:
-            self.print_log("Tiến trình bị đóng băng (crash).")
-            QMessageBox.critical(self, "Thất bại", "Tiến trình inference bị tắt đột ngột!")
-        elif exit_code != 0:
-            self.print_log(f"Render lỗi (Mã thoát: {exit_code}).")
+        if not success:
+            self.print_log(f"Render lỗi.")
             QMessageBox.critical(self, "Lỗi Render", "Đã xảy ra lỗi trong quá trình tạo giọng. Hãy kiểm tra log.")
         else:
             self.print_log("HOÀN TẤT THÀNH CÔNG!")
-            QMessageBox.information(self, "Hoàn tất", f"Đã kết xuất Audio thành công tại:\n{self.output_path_input.text()}")
+            QMessageBox.information(self, "Hoàn tất", f"Đã kết xuất Audio thành công tại:\n{result_msg}")
 
 
 if __name__ == "__main__":
     import sys
     
-    # PyInstaller multiprocessing / subprocess support
-    if getattr(sys, 'frozen', False) and len(sys.argv) > 1 and sys.argv[1] == "inference_worker":
-        # We are running as an inference subprocess
-        sys.argv.pop(1)
-        import inference
-        inference.main()
-        sys.exit(0)
-
     app = QApplication(sys.argv)
     
     # Improve look on macOS/Windows
