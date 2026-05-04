@@ -16,6 +16,35 @@ import platform
 import uuid
 
 
+import subprocess
+
+def get_stable_hardware_id() -> str:
+    """Lấy ID phần cứng cố định thay vì dùng uuid.getnode() có thể bị random trên Mac."""
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            result = subprocess.check_output(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], 
+                stderr=subprocess.DEVNULL
+            ).decode("utf-8")
+            for line in result.split("\n"):
+                if "IOPlatformUUID" in line:
+                    return line.split('"')[-2]
+        elif system == "Windows":
+            result = subprocess.check_output(
+                ["wmic", "csproduct", "get", "uuid"], 
+                stderr=subprocess.DEVNULL
+            ).decode("utf-8")
+            return result.split("\n")[1].strip()
+        elif system == "Linux":
+            with open("/etc/machine-id", "r") as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    
+    # Fallback
+    return str(uuid.getnode())
+
 def get_device_id() -> str:
     """Tạo Device ID duy nhất dựa trên phần cứng máy.
     
@@ -23,10 +52,10 @@ def get_device_id() -> str:
         Chuỗi 16 ký tự hex in hoa, ví dụ: 'A1B2C3D4E5F6G7H8'
     """
     raw_parts = [
-        platform.node(),           # Hostname
-        str(uuid.getnode()),       # MAC address (integer)
-        platform.machine(),        # CPU architecture (arm64, x86_64, ...)
-        platform.system(),         # OS (Darwin, Windows, Linux)
+        platform.node(),              # Hostname
+        get_stable_hardware_id(),     # UUID cố định
+        platform.machine(),           # CPU architecture
+        platform.system(),            # OS
     ]
     raw = "-".join(raw_parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16].upper()
