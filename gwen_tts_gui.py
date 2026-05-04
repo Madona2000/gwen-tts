@@ -25,7 +25,6 @@ class GwenTTSGui(QMainWindow):
             QGroupBox::title {
                 subcontrol-origin: margin;
                 padding: 0 3px;
-                color: #333;
             }
             QPushButton {
                 background-color: #2c3e50;
@@ -62,10 +61,14 @@ class GwenTTSGui(QMainWindow):
         # -----------------------------------------------------------------
         # Input Text Section
         # -----------------------------------------------------------------
-        text_group = QGroupBox("1. Văn bản cần đọc (Nội dung Text-to-Speech)")
+        text_group = QGroupBox("Bạn muốn tôi nói gì?")
         text_layout = QVBoxLayout()
+        text_label = QLabel("Nhập nội dung bạn muốn AI đọc tại đây:")
+        text_label.setStyleSheet("font-size: 14px; padding: 2px 0;")
+        text_layout.addWidget(text_label)
         self.input_text = QTextEdit()
-        self.input_text.setPlaceholderText("Nhập nội dung bạn muốn AI đọc tại đây...\n\n💡 Số, ngày tháng, tiền tệ, đơn vị (km/h, °C, %) sẽ được tự động chuyển thành chữ Việt.")
+        self.input_text.setMinimumHeight(120)
+        self.input_text.setPlaceholderText("Nhập nội dung tại đây...\n\nSố, ngày tháng, tiền tệ, đơn vị (km/h, °C, %) sẽ được tự động chuyển thành chữ Việt.")
         text_layout.addWidget(self.input_text)
         text_group.setLayout(text_layout)
         main_layout.addWidget(text_group)
@@ -266,7 +269,13 @@ class GwenTTSGui(QMainWindow):
         # Prepare arguments: Tự động dùng card đồ họa (MPS) trên Mac chip M-series để tăng tốc
         import platform
         device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
-        args = ["-u", inference_script, "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
+        
+        if getattr(sys, 'frozen', False):
+            # PyInstaller packaged mode
+            args = ["inference_worker", "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
+        else:
+            # Dev mode
+            args = ["-u", inference_script, "--text", text, "--output", out_path, "--device", device, "--language", "vietnamese"]
 
         # Check which mode is active
         if self.tab_widget.currentIndex() == 0:  # Built-in
@@ -285,20 +294,43 @@ class GwenTTSGui(QMainWindow):
                 QMessageBox.warning(self, "Lỗi", "Vui lòng ghi Transcript cho audio mẫu.")
                 return
 
-            # Cảnh báo nếu audio mẫu quá dài
+            # Pre-process & Cảnh báo nếu audio mẫu quá dài
             try:
+                self.print_log("Đang tối ưu hóa âm thanh mẫu (Resample 16kHz, Trim noise, Normalize)...")
+                QApplication.processEvents() # Cập nhật UI
+                
+                import librosa
                 import soundfile as sf
-                info = sf.info(ref_audio)
-                if info.duration > 15.0:
+                
+                # Load with librosa to force 16kHz mono
+                y, sr = librosa.load(ref_audio, sr=16000, mono=True)
+                
+                # Trim silence at the beginning and end
+                y_trimmed, _ = librosa.effects.trim(y, top_db=25)
+                
+                # Normalize audio loudness
+                y_normalized = librosa.util.normalize(y_trimmed)
+                
+                duration = len(y_normalized) / sr
+                
+                if duration > 15.0:
                     reply = QMessageBox.question(
                         self, "Cảnh báo Audio Quá Dài",
-                        f"Audio mẫu của bạn dài {info.duration:.1f} giây. Khuyến nghị CHỈ dùng audio từ 3-10 giây để AI tập trung tốt nhất. Dùng audio quá dài sẽ khiến thời gian chạy rất lâu (vài phút) và AI dễ bị nhầm lẫn (treo/im lặng). Bạn có chắc chắn muốn tiếp tục?",
+                        f"Audio mẫu sau khi tối ưu vẫn dài {duration:.1f} giây. Khuyến nghị CHỈ dùng audio từ 3-10 giây để AI tập trung tốt nhất. Dùng audio quá dài sẽ khiến thời gian chạy rất lâu và AI dễ bị nhầm lẫn (treo/im lặng/giọng TQ). Bạn có chắc chắn muốn tiếp tục?",
                         QMessageBox.Yes | QMessageBox.No, QMessageBox.No
                     )
                     if reply == QMessageBox.No:
+                        self.print_log("Đã hủy bỏ vì audio quá dài.")
                         return
+                
+                # Save processed file to a temp location
+                processed_ref_path = os.path.join(os.getcwd(), "temp_custom_ref.wav")
+                sf.write(processed_ref_path, y_normalized, sr)
+                
+                self.print_log(f"Tối ưu hóa xong. Độ dài mới: {duration:.2f}s (gốc: {len(y)/16000:.2f}s).")
+                ref_audio = processed_ref_path
             except Exception as e:
-                self.print_log(f"Cảnh báo: Không thể kiểm tra độ dài audio: {e}")
+                self.print_log(f"Cảnh báo: Lỗi khi tối ưu hóa âm thanh (sẽ dùng file gốc): {e}")
 
             args.extend(["--ref_audio", ref_audio, "--ref_text", ref_text])
 
@@ -365,10 +397,30 @@ class GwenTTSGui(QMainWindow):
 
 
 if __name__ == "__main__":
+    import sys
+    
+    # PyInstaller multiprocessing / subprocess support
+    if getattr(sys, 'frozen', False) and len(sys.argv) > 1 and sys.argv[1] == "inference_worker":
+        # We are running as an inference subprocess
+        sys.argv.pop(1)
+        import inference
+        inference.main()
+        sys.exit(0)
+
     app = QApplication(sys.argv)
     
     # Improve look on macOS/Windows
     app.setStyle("Fusion")
+    
+    # ── License Check ───────────────────────────────────────────
+    # Xác thực license key trước khi mở giao diện chính.
+    # Nếu chưa có key hoặc key không hợp lệ → hiện dialog nhập key.
+    # Nếu người dùng chọn "Thoát" → đóng app.
+    # ────────────────────────────────────────────────────────────
+    from license.login_dialog import check_license_or_exit
+    
+    if not check_license_or_exit(app):
+        sys.exit(0)
     
     window = GwenTTSGui()
     window.show()

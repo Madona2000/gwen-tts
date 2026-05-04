@@ -32,15 +32,15 @@ import soundfile as sf
 # speaker. Lower temperature = less drift toward the model's training dominant
 # language (Chinese). temperature=0.7 is too high and causes Chinese bleed-through.
 GENERATION_CONFIG = dict(
-    temperature=0.3,
-    top_k=30,
-    top_p=0.85,
+    temperature=0.2,
+    top_k=20,
+    top_p=0.80,
     max_new_tokens=4096,
-    repetition_penalty=1.05,
+    repetition_penalty=1.0,
     subtalker_dosample=True,
-    subtalker_temperature=0.3,
-    subtalker_top_k=30,
-    subtalker_top_p=0.85,
+    subtalker_temperature=0.2,
+    subtalker_top_k=20,
+    subtalker_top_p=0.80,
 )
 
 # Pitch shift for Theanh28 voice matching (in semitones).

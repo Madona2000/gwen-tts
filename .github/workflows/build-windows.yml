@@ -1,0 +1,33 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      run: pip install uv
+
+    - name: Install dependencies
+      run: uv pip install --system -r requirements.txt
+
+    - name: Build App with PyInstaller
+      run: |
+        pyinstaller --name "Gwen-TTS" --windowed --add-data "data;data" --add-data "license;license" --add-data "text_normalizer.py;." --add-data "inference.py;." -y gwen_tts_gui.py
+
+    - name: Upload Windows App Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Gwen-TTS-Windows-App
+        path: dist/Gwen-TTS/
