@@ -23,15 +23,21 @@ jobs:
       shell: bash
       run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller python-telegram-bot
 
+    - name: Obfuscate Source Code with PyArmor
+      shell: bash
+      run: |
+        uv pip install --system pyarmor
+        pyarmor gen -O dist/obf gwen_tts_gui.py inference.py text_normalizer.py license/
+
     - name: Build App with PyInstaller
       shell: bash
       run: |
+        cp -r data dist/obf/data
+        cd dist/obf
         pyinstaller --name "Gwen-TTS" --windowed \
           --add-data "data;data" \
-          --add-data "license;license" \
-          --add-data "text_normalizer.py;." \
-          --add-data "inference.py;." \
           --hidden-import inference \
+          --hidden-import text_normalizer \
           --hidden-import qwen_tts \
           --hidden-import torch \
           --hidden-import torchaudio \
@@ -39,10 +45,11 @@ jobs:
           --hidden-import soundfile \
           --hidden-import PyQt5 \
           --hidden-import telegram \
+          --paths . \
           -y gwen_tts_gui.py
 
     - name: Upload Windows App Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Gwen-TTS-Windows-App
-        path: dist/Gwen-TTS/
+        path: dist/obf/dist/Gwen-TTS/
