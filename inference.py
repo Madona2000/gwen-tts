@@ -383,6 +383,64 @@ def generate_with_speaker(model, text, language, speaker_key, ref_info, base_dir
     )
 
 
+def split_text_into_chunks(text, max_chars=350):
+    """
+    Tự động chia nhỏ văn bản dài thành các đoạn nhỏ (mặc định <= 350 ký tự)
+    dựa trên dấu chấm câu để tránh tràn RAM và duy trì chất lượng giọng nói.
+    """
+    import re
+    # Cắt sau dấu chấm, chấm than, chấm hỏi đi kèm khoảng trắng hoặc xuống dòng
+    sentences = re.split(r'(?<=[.!?])\s+|\n+', text.strip())
+    
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        # Nếu câu quá dài, cắt tiếp bằng dấu phẩy
+        if len(sentence) > max_chars:
+            sub_sentences = re.split(r'(?<=[,;])\s+', sentence)
+            for sub in sub_sentences:
+                sub = sub.strip()
+                if not sub: continue
+                if len(current_chunk) + len(sub) + 1 > max_chars and current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = sub
+                else:
+                    current_chunk = current_chunk + " " + sub if current_chunk else sub
+        else:
+            if len(current_chunk) + len(sentence) + 1 > max_chars and current_chunk:
+                chunks.append(current_chunk.strip())
+                current_chunk = sentence
+            else:
+                current_chunk = current_chunk + " " + sentence if current_chunk else sentence
+                
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+        
+    return chunks
+
+def _concat_audio_chunks(wav_list, sr, gap_seconds=0.25):
+    """Nối danh sách các đoạn âm thanh lại, chèn khoảng lặng nhỏ giữa các câu (mô phỏng lấy hơi)."""
+    if not wav_list:
+        import numpy as np
+        return np.array([], dtype=np.float32)
+        
+    import numpy as np
+    pad_samples = int(gap_seconds * sr)
+    silence = np.zeros(pad_samples, dtype=wav_list[0].dtype)
+    
+    result = []
+    for i, wav in enumerate(wav_list):
+        result.append(wav)
+        if i < len(wav_list) - 1:
+            result.append(silence)
+            
+    return np.concatenate(result)
+
 def main():
     parser = argparse.ArgumentParser(description="Gwen-TTS: Vietnamese Voice Cloning")
     parser.add_argument("--text", type=str, help="Text to synthesize")
@@ -455,34 +513,51 @@ def main():
     print("Model loaded successfully.")
 
     # ── Logic ────────────────────────────────────────────────────────
-    #
     # Checkbox --theanh28 → theanh28_style = True
-    #   → Text manipulation (. → !! , → ! ! → !!! ? → ???)
-    #   → Also enables optional pitch shift.
     # ─────────────────────────────────────────────────────────────────
-    
-    # Text manipulation: ONLY from checkbox (never auto)
     theanh28_style = args.theanh28
+
+    # Chia nhỏ văn bản thành các câu để xử lý (tránh tràn RAM và cụt âm thanh)
+    chunks = split_text_into_chunks(args.text, max_chars=400)
+    print(f"\n[Chunking] Văn bản dài {len(args.text)} ký tự được tự động chia thành {len(chunks)} phần nhỏ.")
+    
+    all_wavs = []
+    final_sr = 24000
 
     if args.speaker:
         ref_info = load_speaker_info(ref_info_path)
         print(f"Generating with speaker: {ref_info[args.speaker]['name']}...")
-        wav, sr = generate_with_speaker(
-            model, args.text, args.language, args.speaker, ref_info, base_dir,
-            theanh28_style=theanh28_style,
-            pitch_shift=args.pitch_shift,
-        )
+        
+        for i, chunk in enumerate(chunks):
+            print(f"\n--- Đang xử lý phần {i+1}/{len(chunks)} ({len(chunk)} ký tự) ---")
+            wav, sr = generate_with_speaker(
+                model, chunk, args.language, args.speaker, ref_info, base_dir,
+                theanh28_style=theanh28_style,
+                pitch_shift=args.pitch_shift,
+            )
+            all_wavs.append(wav)
+            final_sr = sr
     else:
         print(f"Generating with custom reference audio: {args.ref_audio}...")
-        wav, sr = generate_voice_clone(
-            model, args.text, args.language, args.ref_audio, args.ref_text,
-            theanh28_style=theanh28_style,
-            pitch_shift=args.pitch_shift,
-        )
+        
+        for i, chunk in enumerate(chunks):
+            print(f"\n--- Đang xử lý phần {i+1}/{len(chunks)} ({len(chunk)} ký tự) ---")
+            wav, sr = generate_voice_clone(
+                model, chunk, args.language, args.ref_audio, args.ref_text,
+                theanh28_style=theanh28_style,
+                pitch_shift=args.pitch_shift,
+            )
+            all_wavs.append(wav)
+            final_sr = sr
 
-    sf.write(args.output, wav, sr)
-    print(f"Saved to {args.output} (sample rate: {sr}Hz)")
+    if len(all_wavs) > 1:
+        print("\n[Nối file] Đang ghép nối các phần lại thành 1 file âm thanh hoàn chỉnh...")
+        final_wav = _concat_audio_chunks(all_wavs, final_sr, gap_seconds=0.25)
+    else:
+        final_wav = all_wavs[0]
 
+    sf.write(args.output, final_wav, final_sr)
+    print(f"Saved final audio to {args.output} (sample rate: {final_sr}Hz)")
 
 if __name__ == "__main__":
     main()
