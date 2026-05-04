@@ -20,7 +20,7 @@ jobs:
       run: pip install uv
 
     - name: Install dependencies
-      run: uv pip install --system -r requirements.txt
+      run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller
 
     - name: Build App with PyInstaller
       run: |
