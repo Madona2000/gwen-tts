@@ -20,11 +20,26 @@ jobs:
       run: pip install uv
 
     - name: Install dependencies
-      run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller
+      shell: bash
+      run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller python-telegram-bot
 
     - name: Build App with PyInstaller
+      shell: bash
       run: |
-        pyinstaller --name "Gwen-TTS" --windowed --add-data "data;data" --add-data "license;license" --add-data "text_normalizer.py;." --add-data "inference.py;." -y gwen_tts_gui.py
+        pyinstaller --name "Gwen-TTS" --windowed \
+          --add-data "data;data" \
+          --add-data "license;license" \
+          --add-data "text_normalizer.py;." \
+          --add-data "inference.py;." \
+          --hidden-import inference \
+          --hidden-import qwen_tts \
+          --hidden-import torch \
+          --hidden-import torchaudio \
+          --hidden-import librosa \
+          --hidden-import soundfile \
+          --hidden-import PyQt5 \
+          --hidden-import telegram \
+          -y gwen_tts_gui.py
 
     - name: Upload Windows App Artifact
       uses: actions/upload-artifact@v4
