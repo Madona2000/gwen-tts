@@ -21,13 +21,16 @@ jobs:
 
     - name: Install dependencies
       shell: bash
-      run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller python-telegram-bot
+      run: uv pip install --system qwen-tts torch torchaudio soundfile numpy librosa PyQt5 requests pyinstaller scipy
 
     - name: Obfuscate Source Code with PyArmor
       shell: bash
       run: |
         uv pip install --system pyarmor
-        pyarmor gen -O dist/obf gwen_tts_gui.py inference.py text_normalizer.py license/
+        # Obfuscate từng file riêng, GIỮ NGUYÊN cấu trúc package license/
+        # để relative imports (.checker, .device_id, .firebase_config) không bị phá vỡ
+        pyarmor gen -O dist/obf gwen_tts_gui.py inference.py text_normalizer.py
+        pyarmor gen -O dist/obf/license license/__init__.py license/checker.py license/device_id.py license/firebase_config.py license/login_dialog.py
 
     - name: Build App with PyInstaller
       shell: bash
@@ -45,6 +48,13 @@ jobs:
           --hidden-import soundfile \
           --hidden-import PyQt5 \
           --hidden-import telegram \
+          --hidden-import license \
+          --hidden-import license.checker \
+          --hidden-import license.device_id \
+          --hidden-import license.firebase_config \
+          --hidden-import license.login_dialog \
+          --hidden-import scipy \
+          --hidden-import scipy.signal \
           --paths . \
           -y gwen_tts_gui.py
 

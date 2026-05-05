@@ -494,7 +494,38 @@ class GwenTTSGui(QMainWindow):
 
 if __name__ == "__main__":
     import sys
-    
+    import os
+    import traceback
+
+    # ── Global Crash Handler ────────────────────────────────────
+    # Khi build --windowed (PyInstaller), mọi exception đều bị nuốt.
+    # Handler này ghi lỗi ra file và hiện MessageBox cho người dùng.
+    # ────────────────────────────────────────────────────────────
+    def _crash_handler(exc_type, exc_value, exc_tb):
+        error_msg = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        log_path = os.path.join(os.path.expanduser("~"), "gwen_tts_crash.log")
+        try:
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(f"Gwen-TTS Crash Report\n{'='*40}\n{error_msg}")
+        except Exception:
+            pass
+        # Hiện MessageBox cho người dùng
+        try:
+            from PyQt5.QtWidgets import QApplication, QMessageBox
+            if QApplication.instance() is None:
+                _app = QApplication(sys.argv)
+            QMessageBox.critical(
+                None, "Gwen-TTS — Lỗi nghiêm trọng",
+                f"Ứng dụng gặp lỗi:\n\n{str(exc_value)}\n\n"
+                f"Chi tiết lỗi đã được lưu tại:\n{log_path}\n\n"
+                f"Vui lòng gửi file này cho admin để được hỗ trợ."
+            )
+        except Exception:
+            pass
+        sys.exit(1)
+
+    sys.excepthook = _crash_handler
+
     app = QApplication(sys.argv)
     
     # Improve look on macOS/Windows
@@ -505,7 +536,15 @@ if __name__ == "__main__":
     # Nếu chưa có key hoặc key không hợp lệ → hiện dialog nhập key.
     # Nếu người dùng chọn "Thoát" → đóng app.
     # ────────────────────────────────────────────────────────────
-    from license.login_dialog import check_license_or_exit
+    try:
+        from license.login_dialog import check_license_or_exit
+    except ImportError as e:
+        QMessageBox.critical(
+            None, "Gwen-TTS — Lỗi khởi tạo",
+            f"Không thể nạp module license:\n\n{str(e)}\n\n"
+            f"Vui lòng liên hệ admin."
+        )
+        sys.exit(1)
     
     if not check_license_or_exit(app):
         sys.exit(0)
@@ -513,3 +552,4 @@ if __name__ == "__main__":
     window = GwenTTSGui()
     window.show()
     sys.exit(app.exec_())
+

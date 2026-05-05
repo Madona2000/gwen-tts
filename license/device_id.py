@@ -31,11 +31,36 @@ def get_stable_hardware_id() -> str:
                 if "IOPlatformUUID" in line:
                     return line.split('"')[-2]
         elif system == "Windows":
-            result = subprocess.check_output(
-                ["wmic", "csproduct", "get", "uuid"], 
-                stderr=subprocess.DEVNULL
-            ).decode("utf-8")
-            return result.split("\n")[1].strip()
+            # Ưu tiên PowerShell (hoạt động trên mọi Windows 10/11)
+            # wmic đã bị Microsoft deprecated và XÓA khỏi nhiều bản Windows 11
+            creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+            try:
+                result = subprocess.check_output(
+                    ["powershell", "-NoProfile", "-Command",
+                     "(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID"],
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                    timeout=10,
+                ).decode("utf-8").strip()
+                if result and len(result) > 8:
+                    return result
+            except Exception:
+                pass
+            # Fallback: Registry MachineGuid (cố định, không cần admin, nhanh)
+            try:
+                result = subprocess.check_output(
+                    ["reg", "query",
+                     r"HKLM\SOFTWARE\Microsoft\Cryptography",
+                     "/v", "MachineGuid"],
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                    timeout=5,
+                ).decode("utf-8")
+                for line in result.split("\n"):
+                    if "MachineGuid" in line:
+                        return line.split()[-1].strip()
+            except Exception:
+                pass
         elif system == "Linux":
             with open("/etc/machine-id", "r") as f:
                 return f.read().strip()
