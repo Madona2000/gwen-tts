@@ -47,6 +47,9 @@ jobs:
           --hidden-import librosa \
           --hidden-import soundfile \
           --hidden-import PyQt5 \
+          --hidden-import PyQt5.QtWidgets \
+          --hidden-import PyQt5.QtCore \
+          --hidden-import PyQt5.QtGui \
           --hidden-import telegram \
           --hidden-import license \
           --hidden-import license.checker \
@@ -55,6 +58,12 @@ jobs:
           --hidden-import license.login_dialog \
           --hidden-import scipy \
           --hidden-import scipy.signal \
+          --hidden-import urllib.request \
+          --hidden-import urllib.error \
+          --hidden-import uuid \
+          --hidden-import hashlib \
+          --hidden-import platform \
+          --hidden-import subprocess \
           --paths . \
           -y gwen_tts_gui.py
 
