@@ -41,11 +41,12 @@ jobs:
           --add-data "data;data" \
           --hidden-import inference \
           --hidden-import text_normalizer \
-          --hidden-import qwen_tts \
-          --hidden-import torch \
-          --hidden-import torchaudio \
-          --hidden-import librosa \
-          --hidden-import soundfile \
+          --collect-all qwen_tts \
+          --collect-all torch \
+          --collect-all torchaudio \
+          --collect-all transformers \
+          --collect-all librosa \
+          --collect-all soundfile \
           --hidden-import PyQt5 \
           --hidden-import PyQt5.QtWidgets \
           --hidden-import PyQt5.QtCore \

@@ -12,15 +12,18 @@ class ModelLoaderThread(QThread):
 
     def run(self):
         self.log.emit("Đang nạp mô hình AI vào bộ nhớ... (Sẽ mất khoảng 30-60 giây ở lần mở đầu tiên)")
-        import platform
-        import inference
-        device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
         try:
+            import platform
+            import inference
+            import traceback
+            device = "mps" if platform.system() == "Darwin" and platform.machine() == "arm64" else "cpu"
             model = inference.load_model("g-group-ai-lab/gwen-tts-0.6B", device=device)
             self.log.emit("✅ Nạp mô hình thành công! Đã sẵn sàng tạo giọng nói ngay lập tức.")
             self.finished.emit(model)
         except Exception as e:
-            self.log.emit(f"❌ Lỗi nạp mô hình: {str(e)}")
+            import traceback
+            err = traceback.format_exc()
+            self.log.emit(f"❌ Lỗi nạp mô hình: {str(e)}\n{err}")
             self.finished.emit(None)
 
 class StdoutRedirector:
